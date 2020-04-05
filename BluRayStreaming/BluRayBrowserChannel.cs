@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Runtime.Serialization.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Common;
@@ -42,11 +44,107 @@ namespace BluRayStreaming
             get { return "Stream your BluRays without having to remux them"; }
         }
         
-        public Task<ChannelItemResult> GetChannelItems(InternalChannelItemQuery query, CancellationToken cancellationToken)
+        public async Task<ChannelItemResult> GetChannelItems(InternalChannelItemQuery query, CancellationToken cancellationToken)
         {
-            throw new System.NotImplementedException();
+            _logger.Debug("Category ID " + query.FolderId);
+
+            var items = new List<ChannelItemInfo>();
+            
+            items = await GetMenu(query, cancellationToken).ConfigureAwait(false);
+            
+            return new ChannelItemResult()
+            {
+                Items = items
+            };
         }
-        
+
+        private async Task<List<ChannelItemInfo>> GetMenu(InternalChannelItemQuery query, CancellationToken cancellationToken)
+        {
+            DataContractJsonSerializer deserializer = new DataContractJsonSerializer(typeof(BluRayPlaylistInfos));
+
+            var items = new List<ChannelItemInfo>();
+            
+            var url = BluRayStreaming.Plugin.Instance.Configuration.BaseURL + "/list";
+            if (query.FolderId != "")
+            {
+                url += "?dir=" + query.FolderId;
+            }
+
+            using (var response = await _httpClient.SendAsync(new HttpRequestOptions
+            {
+                Url = url,
+                CancellationToken = cancellationToken
+
+            }, "GET").ConfigureAwait(false))
+            {
+                using (var data = response.Content)
+                {
+                    using (var ms = new MemoryStream())
+                    {
+                        await data.CopyToAsync(ms, 81920, cancellationToken).ConfigureAwait(false);
+                        
+                        var result = (BluRayPlaylistInfos) deserializer.ReadObject(ms);
+
+                        foreach (var item in result.Results)
+                        {
+                            items.Add(ResultToChannelItemInfo(item));
+                        }
+                    }
+                }
+            }
+
+            return items;
+        }
+
+        private ChannelItemInfo ResultToChannelItemInfo(BluRayPlaylistInfo item)
+        {
+            ChannelItemInfo info;
+            
+            if (item.IsFolder)
+            {
+                info = new ChannelItemInfo
+                {
+                    Id = item.Id,
+                    ImageUrl = "",
+                    Name = item.Name,
+                    Type = ChannelItemType.Folder
+                };
+            } 
+            else
+            {
+                info = new ChannelItemInfo
+                {
+                    ContentType = ChannelMediaContentType.Movie,
+                    Id = item.Id,
+                    ImageUrl = "",
+                    MediaType = ChannelMediaType.Video,
+                    Name = item.Name,
+                    RunTimeTicks = item.Runtime,
+                    Type = ChannelItemType.Media, 
+                };
+
+                switch (item.Type.ToLower())
+                {
+                case "extra":
+                    info.ContentType = ChannelMediaContentType.MovieExtra;
+                    break;
+                case "trailer":
+                    info.ContentType = ChannelMediaContentType.Trailer;
+                    break;
+                case "episode":
+                    info.ContentType = ChannelMediaContentType.Episode;
+                    info.SeriesName = item.SeriesName;
+                    break;
+                case "tvextra":
+                    info.ContentType = ChannelMediaContentType.TvExtra;
+                    info.SeriesName = item.SeriesName;
+                    break;
+                }
+            }
+
+            return info;
+        }
+
         public Task<IEnumerable<MediaSourceInfo>> GetChannelItemMediaInfo(string id, CancellationToken cancellationToken)
         {
             throw new System.NotImplementedException();
@@ -60,6 +158,7 @@ namespace BluRayStreaming
                 {
                     ChannelMediaContentType.Movie,
                     ChannelMediaContentType.MovieExtra,
+                    ChannelMediaContentType.Trailer,
                     ChannelMediaContentType.Episode,
                     ChannelMediaContentType.TvExtra,
                 },
